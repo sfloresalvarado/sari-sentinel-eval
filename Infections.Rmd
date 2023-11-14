@@ -1,0 +1,1388 @@
+---
+title: "Covid-19 infections in Chile"
+author: "Sandra Flores Alvarado"
+date: "`r Sys.Date()`"
+output: html_document
+---
+
+# 
+```{r LIBRERIAS, message=FALSE, include=FALSE}
+rm(list = ls()); gc(verbose = F)
+
+knitr::opts_chunk$set(echo = F,
+                      message = F,
+                      warning = F)
+
+#administración de datos y gráficos
+library(tidyverse)
+library(zoo)
+library(lubridate)
+library(ggpubr)
+library(kableExtra)
+#modelos
+library(glmmTMB)
+library(MASS)
+library(performance)
+#distancias
+library(TSdist)
+library(epitools)
+library(dtw)
+```
+
+# Data para paper
+```{r DATOS DEFINITIVOS AGREGADOS}
+load("data/dat_clean contagios.RData")
+```
+
+# Análisis exploratorio
+
+## Total
+
+```{r irag nacional}
+#dat####
+d.plot <- dat_clean %>% 
+  group_by(semana_anno_sint, semana_sintomas, anno_sintomas, 
+           vigilancia) %>% 
+  summarise(conteo = sum(conteo)) %>% 
+  left_join(pob_nac %>% 
+              group_by(anno_sintomas) %>% 
+              summarise(poblacion = sum(poblacion, na.rm = T))) %>% 
+  left_join(pob_irag %>% 
+              group_by(anno_sintomas) %>% 
+              summarise(poblacion_irag = sum(poblacion, na.rm = T))) %>% 
+  left_join(dat_hosp %>% 
+              group_by(anno_sintomas, semana_anno_sint) %>% 
+              summarise(conteo_hosp = sum(conteo_hosp),
+                        conteo_notif = sum(conteo_notif)) %>% 
+              mutate(prop_hosp = conteo_hosp/conteo_notif)) %>% 
+  #mutate(conteo_mean = rollapply(conteo, 4, mean, align = "center", fill = NA, partial = T),
+   #      conteo_mean = floor(conteo_mean)) %>% 
+  ungroup() %>% 
+  mutate(poblacion = ifelse(vigilancia == "irag", poblacion_irag, poblacion),
+         tasa = (conteo/poblacion) *1e5,
+         tasa = na_if(tasa, Inf),
+         tasa_est = ifelse(vigilancia == "irag", tasa*(1/prop_hosp), tasa))
+         #corrección: por proporción de hospitalizaciones
+         #irag no sirve para estimar incidencia de contagios sino de
+         #hospitalizaciones, salvo que apliquemos esta corrección
+
+#plot####
+d.plot %>% 
+  ggplot(aes(x = semana_anno_sint)) +
+  geom_line(aes(y = tasa_est, color = vigilancia)) +
+ # geom_line(aes(y = tasa_est, color = vigilancia), linetype = 3) +
+  labs(title = "Incidencia de COVID-19, marzo 2020 - marzo 2023",
+       x = "Fecha",
+       y = "Incidencia estimada por 100.000 habitantes",
+       color = "Vigilancia",
+       caption = "Vigilancia IRAG corregida por porcentaje de hospitalizaciones") +
+  theme_minimal(base_size = 8) +
+  theme(plot.caption = element_text(hjust = 0))
+
+```
+
+## Por sexo
+```{r irag nacional por sexo}
+d.plot <- dat_clean %>% 
+#consideramos sólo hasta 80 años porque hasta ese grupo hay poblaciones estimadas para IRAG
+  group_by(semana_anno_sint, semana_sintomas, anno_sintomas, 
+           vigilancia, sexo) %>% 
+  summarise(conteo = sum(conteo)) %>% 
+  left_join(pob_nac %>% 
+              group_by(sexo, anno_sintomas) %>% 
+              summarise(poblacion = sum(poblacion, na.rm = T))) %>% 
+  left_join(pob_irag %>% 
+              group_by(sexo, anno_sintomas) %>% 
+              summarise(poblacion_irag = sum(poblacion, na.rm = T))) %>% 
+  left_join(dat_hosp %>% 
+              group_by(anno_sintomas, semana_anno_sint, sexo) %>% 
+              summarise(conteo_hosp = sum(conteo_hosp),
+                        conteo_notif = sum(conteo_notif)) %>% 
+              mutate(prop_hosp = conteo_hosp/conteo_notif)) %>% 
+  ungroup() %>% 
+  mutate(poblacion = ifelse(vigilancia == "irag", poblacion_irag, poblacion),
+         tasa = (conteo/poblacion) *1e5,
+         tasa = ifelse(vigilancia == "irag", tasa*(1/prop_hosp), tasa)) %>% 
+  drop_na(sexo)
+
+d.plot %>% 
+  ggplot(aes(x = semana_anno_sint)) +
+  geom_line(aes(y = tasa, color = vigilancia, linetype = sexo)) +
+  labs(title = "Incidencia de COVID-19, marzo 2020 - marzo 2023",
+       subtitle = "por sexo",
+       x = "Fecha",
+       y = "Incidencia estimada por 100.000 habitantes",
+       color = "Vigilancia",
+       caption = "Vigilancia IRAG corregida por porcentaje de hospitalizaciones") +
+  theme_minimal(base_size = 8) +
+  theme(plot.caption = element_text(hjust = 0))
+```
+
+## Por edad
+```{r fig.width=8, fig.height=4}
+d.plot <- dat_clean %>% 
+#consideramos sólo hasta 80 años porque hasta ese grupo hay poblaciones estimadas para IRAG
+  filter(!(edad_cat %in% c("[80,100)", "[100,120]"))) %>% 
+  group_by(semana_anno_sint, semana_sintomas, anno_sintomas, 
+           vigilancia, edad_cat) %>% 
+  summarise(conteo = sum(conteo)) %>% 
+  left_join(pob_nac %>% 
+              group_by(anno_sintomas, edad_cat) %>% 
+              summarise(poblacion = sum(poblacion, na.rm = T))) %>% 
+  left_join(pob_irag %>% 
+              group_by(anno_sintomas, edad_cat) %>% 
+              summarise(poblacion_irag = sum(poblacion, na.rm = T))) %>% 
+  left_join(dat_hosp %>% 
+              group_by(anno_sintomas, semana_anno_sint, edad_cat) %>% 
+              summarise(conteo_hosp = sum(conteo_hosp),
+                        conteo_notif = sum(conteo_notif)) %>% 
+              mutate(prop_hosp = conteo_hosp/conteo_notif)) %>% 
+  mutate(poblacion = ifelse(vigilancia == "irag", poblacion_irag, poblacion),
+         tasa = conteo/poblacion *1e5,
+         tasa = ifelse(vigilancia == "irag", tasa*(1/prop_hosp), tasa)) %>% 
+  ungroup() %>% 
+  droplevels()
+
+d.plot %>% 
+  ggplot(aes(x = semana_anno_sint)) +
+  geom_line(aes(y = tasa, color = vigilancia)) +
+  labs(title = "Incidencia de COVID-19, marzo 2020 - marzo 2023",
+       subtitle = "por edad",
+       x = "Fecha",
+       y = "Incidencia estimada por 100.000 habitantes",
+       color = "Vigilancia",
+       caption = "Vigilancia IRAG corregida por porcentaje de hospitalizaciones") +
+  facet_wrap(edad_cat ~ ., ncol = 2, scales = "free_y") +
+  theme_minimal(base_size = 8) +
+  theme(plot.caption = element_text(hjust = 0))
+```
+
+## Por región
+```{r fig.width=8, fig.height=4}
+#plot####
+regs_irag <- levels(droplevels(pob_irag$region_est))
+
+d.plot <- dat_clean %>% 
+#consideramos sólo hasta 80 años porque hasta ese grupo hay poblaciones estimadas para IRAG
+  filter(!(edad_cat %in% c("[80,100)", "[100,120]")),
+         region_est %in% regs_irag) %>% 
+  group_by(semana_anno_sint, semana_sintomas, anno_sintomas, 
+           vigilancia, region_est) %>% 
+  summarise(conteo = sum(conteo)) %>% 
+  left_join(pob_reg %>% 
+              group_by(region_est, anno_sintomas) %>% 
+              summarise(poblacion = sum(poblacion, na.rm = T))) %>% 
+  left_join(pob_irag %>% 
+              group_by(region_est, anno_sintomas) %>% 
+              summarise(poblacion_irag = sum(poblacion, na.rm = T))) %>% 
+  left_join(dat_hosp %>% 
+              group_by(anno_sintomas, semana_anno_sint, region_est) %>% 
+              summarise(conteo_hosp = sum(conteo_hosp),
+                        conteo_notif = sum(conteo_notif)) %>% 
+              mutate(prop_hosp = conteo_hosp/conteo_notif)) %>% 
+  mutate(poblacion = ifelse(vigilancia == "irag", poblacion_irag, poblacion),
+         tasa = conteo/poblacion *1e5,
+         tasa = ifelse(vigilancia == "irag", tasa*(1/prop_hosp), tasa)) %>% 
+  ungroup() %>% 
+  drop_na(region_est)
+
+#dat####
+d.plot %>% 
+  ggplot(aes(x = semana_anno_sint)) +
+  geom_line(aes(y = tasa, color = vigilancia)) +
+  labs(title = "Incidencia de COVID-19, marzo 2020 - marzo 2023",
+       subtitle = "por región",
+       x = "Fecha",
+       y = "Incidencia estimada por 100.000 habitantes",
+       color = "Vigilancia",
+       caption = "Vigilancia IRAG corregida por porcentaje de hospitalizaciones") +
+  facet_wrap(region_est ~ ., ncol = 4, scales = "free_y") +
+  theme_minimal(base_size = 8) +
+  theme(plot.caption = element_text(hjust = 0),
+        legend.position = "bottom")
+```
+
+
+
+# Modelamiento
+
+## Datos
+```{r datos modelo}
+regs_irag <- levels(droplevels(pob_irag$region_est))
+
+d.mod <- dat_clean %>% 
+  filter(region_est %in% regs_irag,
+         !(edad_cat %in% c("[80,100)", "[100,120]"))) %>% 
+  pivot_wider(names_from = vigilancia,
+              values_from = conteo) %>% 
+  left_join(pob_reg) %>% 
+  left_join(pob_irag %>% 
+              mutate(poblacion_irag = poblacion) %>% 
+              group_by(anno_sintomas, region_est, edad_cat, sexo) %>% 
+              summarise(poblacion_irag = sum(poblacion_irag))) %>%
+  drop_na(sexo) %>% 
+  group_by(anno_sintomas, semana_sintomas, semana_anno_sint,
+           region_est, edad_cat) %>% 
+  summarise(universal = sum(universal, na.rm = T),
+            irag = sum(irag, na.rm = T),
+            poblacion = sum(poblacion, na.rm = T),
+            poblacion_irag = sum(poblacion_irag, na.rm = T),
+            Alpha = mean(Alpha, na.rm = T), 
+            B.1.1.348 = mean(B.1.1.348, na.rm = T), 
+            B.1.1 = mean(B.1.1, na.rm = T), 
+            Delta = mean(Delta, na.rm = T), 
+            Gamma = mean(Gamma, na.rm = T), 
+            Lambda = mean(Lambda, na.rm = T), 
+            Mu = mean(Mu, na.rm = T), 
+            N.4 = mean(N.4, na.rm = T), 
+            Omicron = mean(Omicron, na.rm = T), 
+            Otras = mean(Otras, na.rm = T)) %>% 
+  ungroup() %>% 
+  left_join(dat_hosp %>% 
+              group_by(anno_sintomas, semana_anno_sint, region_est, edad_cat) %>% 
+              summarise(conteo_hosp = sum(conteo_hosp),
+                        conteo_notif = sum(conteo_notif)) %>% 
+              mutate(prop_hosp = (conteo_hosp/conteo_notif)*100,
+                     .keep = "unused")) %>% 
+  left_join(dat_pos %>% 
+              mutate(positividad = (pcr_positivo/pcr_conteo)*100,
+                     .keep = "unused")) %>%   
+  left_join(dat_vac %>% 
+              left_join(pob_nac %>%
+                          group_by(anno_sintomas, edad_cat) %>% 
+                          summarise(poblacion = sum(poblacion))) %>% 
+              mutate(prop_vac_2da = (vacunas_2da/poblacion)*100,
+                     prop_vac_ref = (vacunas_ref/poblacion)*100,
+                     .keep = "unused")) %>%   
+  mutate(tasa_irag = (irag/poblacion_irag) * 1e5,
+         #tasa_irag = ((irag/poblacion_irag) * (1/prop_hosp)) * 1e5,
+         region_est = relevel(region_est, "Metropolitana"),
+         edad_cat = ordered(edad_cat),
+         universal_mean = rollapply(universal, 4, mean, align = "center", fill = NA, partial = T),
+         universal_mean = floor(universal_mean),
+         prop_vac_2da = replace_na(prop_vac_2da, 0),
+         prop_vac_ref = replace_na(prop_vac_ref, 0) ) %>% 
+  #dplyr::select(-irag, -poblacion_irag) %>% 
+  mutate_at(c("Alpha", "B.1.1.348", "B.1.1", "Delta", "Gamma", 
+            "Lambda", "Mu", "N.4", "Omicron", "Otras"), replace_na, 0) %>% 
+  drop_na() %>% 
+  droplevels()
+```
+
+## Modelos
+
+### Modelos a comparar
+
+```{r}
+load("modelos datos OE1 contagios.RData")
+load("modelos OE1 contagios.RData")
+
+m0 <- mods[[1]]
+m1 <- mods[[2]]
+m2 <- mods[[3]]
+m3 <- mods[[4]]
+
+rm(mods)
+```
+
+#### Modelo nulo
+```{r modelo nulo, eval=F}
+m0 <- glmmTMB(universal ~ offset(log(poblacion)) +
+              (1|region_est:edad_cat),
+              data = d.mod, 
+              family = nbinom2)
+
+pred_m0 <- predict(m0, type = "response", se.fit = T)
+
+d.mod0 <- d.mod %>% 
+  mutate(modelo = "m0",
+         modelo_n = "Modelo 0: nulo") %>% 
+  cbind(pred_m0) %>% 
+  mutate(pred = fit,
+         se = se.fit,
+         .keep = "unused") %>% 
+  mutate(ub = pred + (1.96*se),
+         lb = pred - (1.96*se))
+
+#performance::icc(m0)
+rm(pred_m0)
+```
+
+```{r}
+summary(m0)
+```
+
+#### Modelo básico (sólo variables para tasa irag)
+```{r modelo basico, eval=F}
+m1 <- glmmTMB(universal ~ 
+              semana_anno_sint +
+              tasa_irag + #sí
+              #edad_cat + #prescindible, no mejora mucho la estimación y ya está en el comp aleatorio
+              #region_est + #prescindible, no mejora mucho la estimación y ya está en el comp aleatorio
+              prop_hosp + #sí
+              #prop_vac + #no significativo, posiblemente es info que ya está en prop_hosp
+              offset(log(poblacion)) +
+              (1|region_est:edad_cat),
+              data = d.mod, 
+              family = nbinom2)
+
+pred_m1 <- predict(m1, type = "response", se.fit = T)
+
+d.mod1 <- d.mod %>% 
+  mutate(modelo = "m1",
+         modelo_n = "Modelo 1: básico") %>% 
+  cbind(pred_m1) %>% 
+  mutate(pred = fit,
+         se = se.fit,
+         .keep = "unused") %>% 
+  mutate(ub = pred + (1.96*se),
+         lb = pred - (1.96*se))
+
+#performance::icc(m1)
+rm(pred_m1)
+```
+
+```{r}
+summary(m1)
+```
+
+#### Modelo intermedio
+```{r modelo intermedio, eval=F}
+m2 <- glmmTMB(universal ~ 
+              semana_anno_sint +
+              tasa_irag + #sí
+              positividad + #sí
+              prop_hosp + #sí
+              offset(log(poblacion)) +
+              (1|region_est:edad_cat),
+              data = d.mod, 
+              family = nbinom2)
+
+pred_m2 <- predict(m2, type = "response", se.fit = T)
+
+
+d.mod2 <- d.mod %>% 
+  mutate(modelo = "m2",
+         modelo_n = "Modelo 2: intermedio") %>% 
+  cbind(pred_m2) %>% 
+  mutate(pred = fit,
+         se = se.fit,
+         .keep = "unused") %>% 
+  mutate(ub = pred + (1.96*se),
+         lb = pred - (1.96*se))
+
+#performance::icc(m2)
+rm(pred_m2)
+```
+
+```{r}
+summary(m2)
+```
+
+#### Modelo final
+```{r modelo final, eval=F}
+m3 <- glmmTMB(universal ~ 
+              semana_anno_sint +
+              tasa_irag + #sí
+              positividad + #sí
+              prop_hosp + #sí
+              Alpha + B.1.1.348 + B.1.1 + Delta + Gamma + 
+              Lambda + Mu + N.4 + Omicron + Otras +
+              offset(log(poblacion)) +
+              (1|region_est:edad_cat),
+              data = d.mod, 
+              family = nbinom2)
+
+pred_m3 <- predict(m3, type = "response", se.fit = T, na.action = "na.omit")
+
+
+d.mod3 <- d.mod %>% 
+  drop_na() %>%
+  mutate(modelo = "m3",
+         modelo_n = "Modelo 3: final") %>% 
+  cbind(pred_m3) %>% 
+  mutate(pred = fit,
+         se = se.fit,
+         .keep = "unused") %>% 
+  mutate(ub = pred + (1.96*se),
+         lb = pred - (1.96*se))
+
+#performance::icc(m3)
+rm(pred_m3)
+```
+
+```{r}
+summary(m3)
+```
+
+####
+```{r juntar datos modelos, eval=F}
+d.mod <- rbind(d.mod0, d.mod1, d.mod2, d.mod3)
+rm(d.mod0, d.mod1, d.mod2, d.mod3)
+
+mods <- list(m0, m1, m2, m3)
+
+save(d.mod, file = "modelos datos OE1 contagios.RData")
+save(mods, file = "modelos OE1 contagios.RData")
+```
+
+## Resultados modelos
+```{r}
+tab.models <- data.frame()
+
+modelos <- list(m0, m1, m2, m3)
+
+modelo_n <- c("Modelo 0: nulo", "Modelo 1: básico", "Modelo 2: intermedio", "Modelo 3: final")
+  
+for (i in 1:4){
+  
+  #tabla coeficientes  
+    summ <- summary(modelos[[i]])
+    
+    mod.res <- as.data.frame(summ$coefficients$cond) %>% 
+      mutate(Model = modelo_n[i],
+             Vars = rownames(summ$coefficients$cond),
+             AIC = summ$AICtab[1],
+             BIC = summ$AICtab[2],
+             logLik = summ$AICtab[3],
+             Deviance = summ$AICtab[4],
+             VarRegEdad = attr(summ$varcor$cond$`region_est:edad_cat`, which = "stddev")^2,
+             VarResiduals = attr(summ$varcor$cond, which = "sc")^2,
+             ICC = VarRegEdad / (VarRegEdad + VarResiduals))
+   
+    #tabla evaluación
+    
+
+    tab.models <- rbind(tab.models, mod.res)
+    
+    rm(summ, mod.res)
+}
+
+inv.link <- m0$modelInfo$family$linkinv
+
+tab.models <- tab.models %>% 
+  mutate(Coef = (Estimate),
+         IC_lower = (Estimate - 1.96*`Std. Error`),
+         IC_upper = (Estimate + 1.96*`Std. Error`),
+         IRR = exp(Coef),
+         IRR_lower = exp(IC_lower),
+         IRR_upper = exp(IC_upper))
+  
+rm(i, modelos, modelo_n)
+```
+
+### Gráfico coeficientes
+```{r fig.height=3, fig.width=7}
+tab.models %>% 
+  filter(Vars %in% c("semana_anno_sint",
+                     "tasa_irag",  "prop_hosp",  "positividad",
+                     "Alpha", "B.1.1.348", "B.1.1", "Delta", "Gamma", 
+                     "Lambda", "Mu", "N.4", "Omicron", "Otras"
+              )) %>% 
+  filter(Model != "Modelo 0: nulo") %>% 
+  ggplot(aes(x = Coef, y = Vars)) +
+  geom_jitter(aes(color = Model, shape = Model), width = 0, height = .25) +
+  geom_errorbarh(aes(xmin = IC_lower, xmax = IC_upper, color = Model)) +
+  geom_vline(xintercept = 0, alpha = .3, linetype = 2) +
+  #facet_grid(Model ~ Country, scales = "free_x") +
+  theme(legend.position = "bottom") +
+  labs(color = "Modelo",
+       shape = "Modelo")
+```
+
+### Gráfico exponencial de los coeficientes
+```{r fig.height=3, fig.width=7}
+tab.models %>% 
+  filter(Vars %in% c("semana_anno_sint",
+                     "tasa_irag",  "prop_hosp",  "positividad",
+                     "Alpha", "B.1.1.348", "B.1.1", "Delta", "Gamma", 
+                     "Lambda", "Mu", "N.4", "Omicron", "Otras")) %>% 
+  filter(Model != "Modelo 0: nulo") %>% 
+  ggplot(aes(x = IRR, y = Vars)) +
+  geom_jitter(aes(color = Model, shape = Model), width = 0, height = .25) +
+  geom_errorbarh(aes(xmin = IRR_lower, xmax = IRR_upper, color = Model)) +
+  geom_vline(xintercept = 1, alpha = .3, linetype = 2) +
+  #facet_grid(Model ~ Country, scales = "free_x") +
+  theme(legend.position = "bottom") +
+  labs(color = "Modelo",
+       shape = "Modelo")
+```
+
+### Tabla resumen coeficientes
+```{r}
+t1 <- tab.models %>%
+  mutate(Model = fct_relevel(Model, "Modelo 0: nulo", "Modelo 1: básico", "Modelo 2: intermedio", "Modelo 3: final")) %>% 
+  dplyr::select(Coef, IC_lower, IC_upper, IRR, IRR_lower, IRR_upper, Model, Vars) %>% 
+  mutate(Coef_IC95 = paste(round(Coef, 3), "(", round(IC_lower, 3), "-", round(IC_upper, 3), ")"),
+         IRR_IC95 = paste(round(IRR, 3), "(", round(IRR_lower, 3), "-", round(IRR_upper, 3), ")")) %>% 
+  pivot_wider(id_cols = Vars,
+              values_from = c(IRR_IC95),
+              names_from = Model) 
+
+t2 <- tab.models %>%
+  mutate(Model = fct_relevel(Model, "Modelo 0: nulo", "Modelo 1: básico", "Modelo 2: intermedio", "Modelo 3: final")) %>% 
+  dplyr::select(Model, VarRegEdad, VarResiduals, ICC, AIC, BIC, logLik, Deviance) %>% 
+  distinct() %>% 
+  group_by(Model) %>% 
+  mutate_all(round, 3) %>% 
+  data.table::transpose(keep.names = c("rn"), make.names = "Model") %>% 
+  mutate(Vars = rn,
+         .keep = "unused",
+         .before = "Modelo 0: nulo") 
+
+rbind(t1, t2) %>% 
+  mutate_at(c("Modelo 0: nulo", "Modelo 1: básico", "Modelo 2: intermedio", "Modelo 3: final"), replace_na, "") %>%   kable()
+```
+
+## Plots predicciones
+
+```{r}
+d.mod <- unique(d.mod)
+```
+
+```{r modelo final plot nacional}
+#dat####
+
+d.plot <- d.mod %>% 
+  group_by(semana_anno_sint, semana_sintomas, anno_sintomas, modelo_n) %>% 
+  summarise(poblacion = sum(poblacion),
+            universal = sum(universal),
+            pred = sum(pred),
+            ub = sum(ub),
+            lb = sum(lb)) %>% 
+  ungroup() %>% 
+
+  left_join(dat_pos %>% 
+            group_by(anno_sintomas, semana_anno_sint) %>% 
+            summarise(pcr_conteo = sum(pcr_conteo),
+                      pcr_positivo = sum(pcr_positivo)) %>% 
+            mutate(positividad = pcr_positivo/pcr_conteo,
+                   .keep = "unused")) %>% 
+
+  mutate(tasa_u = (universal/poblacion) *1e5,
+         tasa_pred = (pred/poblacion) *1e5,
+         tasa_ub = (ub/poblacion) *1e5,
+         tasa_lb = (lb/poblacion) *1e5)
+
+scale.factor <- (max(d.plot$tasa_u, na.rm = T) / max(d.plot$positividad, na.rm = T))
+
+#plot####
+d.plot %>% 
+  filter(modelo_n != "Modelo 0: nulo") %>% 
+  ggplot(aes(x = semana_anno_sint)) +
+  geom_bar(data = . %>% filter(modelo_n == "Modelo 3: final"), 
+           aes(y = positividad*scale.factor), 
+           stat = "identity", position = "identity", width = 5, alpha = .15) +
+  geom_line(aes(y = tasa_pred, color = modelo_n), size = .7) +
+  geom_ribbon(aes(ymin = tasa_lb, ymax = tasa_ub, fill = modelo_n), alpha = .3, show.legend = F) +
+  geom_line(data = . %>% filter(modelo_n == "Modelo 3: final"), 
+            aes(y = tasa_u, color = "Tasa observada\n(universal)"), size = .5) +
+  scale_y_continuous(name = "Incidencia estimada por 100.000 habitantes", 
+                     sec.axis = sec_axis(~./scale.factor, 
+                                         name = "Positividad PCR SARS-CoV-2")) +
+   labs(title = "Incidencia de COVID-19, marzo 2020 - marzo 2023",
+       x = "Fecha",
+       color = "Serie") +
+  theme_minimal(base_size = 8)
+
+```
+
+```{r modelo final plots por region}
+#dat####
+d.plot <- d.mod %>% 
+  group_by(semana_anno_sint, semana_sintomas, anno_sintomas, region_est, modelo_n) %>% 
+  summarise(poblacion = sum(poblacion),
+            universal = sum(universal),
+            pred = sum(pred),
+            ub = sum(ub),
+            lb = sum(lb)) %>% 
+  ungroup() %>% 
+
+  left_join(dat_pos %>% 
+            group_by(anno_sintomas, semana_anno_sint) %>% 
+            summarise(pcr_conteo = sum(pcr_conteo),
+                      pcr_positivo = sum(pcr_positivo)) %>% 
+            mutate(positividad = pcr_positivo/pcr_conteo,
+                   .keep = "unused")) %>%   
+  mutate(tasa_u = (universal/poblacion) *1e5,
+         tasa_pred = (pred/poblacion) *1e5,
+         tasa_ub = (ub/poblacion) *1e5,
+         tasa_lb = (lb/poblacion) *1e5)
+
+scale.factor <- (max(d.plot$tasa_u, na.rm = T) / max(d.plot$positividad, na.rm = T))
+
+#plot####
+d.plot %>%
+  filter(modelo_n != "Modelo 0: nulo") %>% 
+  #filter(region_est %in% c("La Araucanía", "Magallanes")) %>% 
+  ggplot(aes(x = semana_anno_sint)) +
+  geom_bar(data = . %>% filter(modelo_n == "Modelo 3: final"), 
+            aes(y = positividad*scale.factor), 
+           stat = "identity", position = "identity", width = 5, alpha = .15) +
+  geom_line(aes(y = tasa_pred, color = modelo_n), size = .7) +
+  geom_ribbon(aes(ymin = tasa_lb, ymax = tasa_ub, fill = modelo_n), alpha = .3, show.legend = F) +
+  geom_line(data = . %>% filter(modelo_n == "Modelo 3: final"), 
+            aes(y = tasa_u, color = "Tasa observada\n(universal)"), size = .5) +
+  scale_y_continuous(name = "Incidencia estimada por 100.000 habitantes", 
+                     sec.axis = sec_axis(~./scale.factor, 
+                                         name = "Positividad PCR SARS-CoV-2")) +
+  labs(title = "Incidencia de COVID-19, marzo 2020 - marzo 2023, por región",
+       x = "Fecha",
+       #y = "Incidencia estimada por 100.000 habitantes",
+       color = "Serie") +
+  theme_minimal(base_size = 8) +
+  #ylim(0, 2000) +
+  facet_wrap("region_est", ncol = 2, scales = "free_y")
+
+#peaks muy sobreestimados en magallanes y la araucanía
+#no entiendo bien por qué
+```
+
+```{r modelo final plots por edad}
+#dat####
+d.plot <- d.mod %>% 
+  group_by(semana_anno_sint, semana_sintomas, anno_sintomas, edad_cat, modelo_n) %>% 
+  summarise(poblacion = sum(poblacion),
+            universal = sum(universal),
+            pred = sum(pred),
+            ub = sum(ub),
+            lb = sum(lb)) %>% 
+  ungroup() %>% 
+
+  left_join(dat_pos %>% 
+            group_by(anno_sintomas, semana_anno_sint) %>% 
+            summarise(pcr_conteo = sum(pcr_conteo),
+                      pcr_positivo = sum(pcr_positivo)) %>% 
+            mutate(positividad = pcr_positivo/pcr_conteo,
+                   .keep = "unused")) %>%   
+
+  mutate(tasa_u = (universal/poblacion) *1e5,
+         tasa_pred = (pred/poblacion) *1e5,
+         tasa_ub = (ub/poblacion) *1e5,
+         tasa_lb = (lb/poblacion) *1e5)
+
+scale.factor <- (max(d.plot$tasa_u, na.rm = T) / max(d.plot$positividad, na.rm = T))
+
+#plot####
+d.plot %>% 
+    filter(modelo_n != "Modelo 0: nulo") %>% 
+#filter(edad_cat == "[70,80)") %>% 
+  ggplot(aes(x = semana_anno_sint)) +
+  geom_bar(data = . %>% filter(modelo_n == "Modelo 3: final"), 
+            aes(y = positividad*scale.factor), 
+           stat = "identity", position = "identity", width = 5, alpha = .15) +
+  geom_line(aes(y = tasa_pred, color = modelo_n), size = .7) +
+  geom_ribbon(aes(ymin = tasa_lb, ymax = tasa_ub, fill = modelo_n), alpha = .3, show.legend = F) +
+  geom_line(data = . %>% filter(modelo_n == "Modelo 3: final"), 
+            aes(y = tasa_u, color = "Tasa observada\n(universal)"), size = .5) +
+  scale_y_continuous(name = "Incidencia estimada por 100.000 habitantes", 
+                     sec.axis = sec_axis(~./scale.factor, 
+                                         name = "Positividad PCR SARS-CoV-2")) +
+  labs(title = "Incidencia de COVID-19, marzo 2020 - marzo 2023, por edad",
+       x = "Fecha",
+       #y = "Incidencia estimada por 100.000 habitantes",
+       color = "Serie") +
+  theme_minimal(base_size = 8) +
+  #ylim(0,2000) +
+  facet_wrap("edad_cat", ncol = 2, scales = "free_y")
+
+```
+
+```{r modelo final plots por region y edad, fig.height=8, fig.width=8}
+#dat####
+d.plot <- d.mod %>% 
+  group_by(semana_anno_sint, semana_sintomas, anno_sintomas, region_est, edad_cat, modelo_n) %>% 
+  summarise(poblacion = sum(poblacion),
+            universal = sum(universal),
+            pred = sum(pred),
+            ub = sum(ub),
+            lb = sum(lb)) %>% 
+  ungroup() %>% 
+
+  left_join(dat_pos %>% 
+            group_by(anno_sintomas, semana_anno_sint) %>% 
+            summarise(pcr_conteo = sum(pcr_conteo),
+                      pcr_positivo = sum(pcr_positivo)) %>% 
+            mutate(positividad = pcr_positivo/pcr_conteo,
+                   .keep = "unused")) %>%   
+
+  mutate(tasa_u = (universal/poblacion) *1e5,
+         tasa_pred = (pred/poblacion) *1e5,
+         tasa_ub = (ub/poblacion) *1e5,
+         tasa_lb = (lb/poblacion) *1e5)
+
+scale.factor <- (max(d.plot$tasa_u, na.rm = T) / max(d.plot$positividad, na.rm = T))
+
+#plot####
+d.plot %>% 
+  filter(modelo_n != "Modelo 0: nulo") %>% 
+  #filter(edad_cat == "[70,80)") %>% 
+  ggplot(aes(x = semana_anno_sint)) +
+  geom_bar(data = . %>% filter(modelo_n == "Modelo 3: final"), 
+            aes(y = positividad*scale.factor), 
+           stat = "identity", position = "identity", width = 5, alpha = .15) +
+  geom_line(aes(y = tasa_pred, color = modelo_n), size = .7) +
+  geom_ribbon(aes(ymin = tasa_lb, ymax = tasa_ub, fill = modelo_n), alpha = .3, show.legend = F) +
+  geom_line(data = . %>% filter(modelo_n == "Modelo 3: final"), 
+            aes(y = tasa_u, color = "Tasa observada\n(universal)"), size = .5) +
+  scale_y_continuous(name = "Incidencia estimada por 100.000 habitantes", 
+                     sec.axis = sec_axis(~./scale.factor, 
+                                         name = "Positividad PCR SARS-CoV-2")) +
+  labs(title = "Incidencia de COVID-19, marzo 2020 - marzo 2023, por región y edad",
+       x = "Fecha",
+       #y = "Incidencia estimada por 100.000 habitantes",
+       color = "Serie") +
+  theme_minimal(base_size = 8) +
+  #ylim(0,2000) +
+  facet_grid(region_est ~ edad_cat, scales = "free_y")
+
+#peak de omicrón muy sobreestimado en grupo [70,80)
+  
+ggsave("Plots/OE1 incidencia estimada x reg + edad.png",
+       height = 10,
+       width = 20,
+       bg = "white")
+
+```
+
+# Comparación de series
+
+## Distancias
+
+### Datos distancias
+```{r dat tabla distancias nac}
+regs_irag <- levels(droplevels(pob_irag$region_est))
+
+d.ts <- d.mod %>% 
+  group_by(semana_anno_sint, semana_sintomas, anno_sintomas, modelo_n) %>% 
+  summarise(universal = sum(universal),
+            irag = sum(irag),
+            pred = sum(pred),
+            ub = sum(ub),
+            lb = sum(lb),
+            se = sum(se),
+            n = n()) %>% 
+  
+  left_join(pob_reg %>% 
+              filter(region_est %in% regs_irag) %>% 
+              group_by(anno_sintomas) %>% 
+              summarise(poblacion = sum(poblacion, na.rm = T))) %>% 
+  left_join(pob_irag %>% 
+              group_by(anno_sintomas) %>% 
+              summarise(poblacion_irag = sum(poblacion, na.rm = T))) %>% 
+
+  mutate(tasa_u = (universal/poblacion) *1e5,
+         tasa_pred = (pred/poblacion) *1e5,
+         tasa_ub = (ub/poblacion) *1e5,
+         tasa_lb = (lb/poblacion) *1e5,
+         se = (se/poblacion) *1e5,
+         ic_cob = ifelse((tasa_u < tasa_ub) & (tasa_u > tasa_lb), T, F),
+         sesgo = (tasa_pred - tasa_u),
+         sesgo_rel = sesgo/tasa_u,
+         sesgo_se = sesgo/se,
+         mape_num = abs(tasa_u - tasa_pred), 
+         mape_den = (abs(tasa_u) + abs(tasa_pred))/2,
+         mape = mape_num/mape_den,
+#         mape = abs(tasa_u - tasa_pred)/abs(tasa_u),
+         ecm = sesgo^2 + se^2,
+         
+         tasa_i = (irag/poblacion_irag) *1e5,
+         n_i = n) %>% 
+  
+  group_by(modelo_n) %>% 
+  mutate(tasa_i_mean = mean(tasa_i)) %>% 
+  ungroup() %>% 
+  
+  mutate(tasa_ub_i = (pois.exact(irag, poblacion_irag)$upper) *1e5,
+         tasa_lb_i = (pois.exact(irag, poblacion_irag)$lower) *1e5,
+         se_i = (tasa_ub_i - tasa_i)/1.96, 
+         ic_cob_i = ifelse((tasa_u < tasa_ub_i) & (tasa_u > tasa_lb_i), T, F),
+         sesgo_i = (tasa_i - tasa_u),
+         sesgo_rel_i = sesgo_i/tasa_u,
+         sesgo_se_i = sesgo_i/se_i,
+         mape_num_i = abs(tasa_u - tasa_i), 
+         mape_den_i = (abs(tasa_u) + abs(tasa_i))/2,
+         mape_i = mape_num_i/mape_den_i,
+#         mape_i = abs(tasa_u - tasa_i)/abs(tasa_u),
+         ecm_i = sesgo_i^2 + se_i^2) %>% 
+  
+  mutate(region_est = as.factor("Chile"),
+         .before = "modelo_n") 
+
+```
+
+```{r dat tabla distancias reg}
+
+d.ts.reg <- d.mod %>% 
+  group_by(semana_anno_sint, semana_sintomas, anno_sintomas, region_est, modelo_n) %>% 
+  summarise(universal = sum(universal),
+            irag = sum(irag),
+            pred = sum(pred),
+            ub = sum(ub),
+            lb = sum(lb),
+            se = sum(se),
+            n = n() ) %>% 
+
+  left_join(pob_reg %>% 
+              filter(region_est %in% regs_irag) %>% 
+              group_by(region_est, anno_sintomas) %>% 
+              summarise(poblacion = sum(poblacion, na.rm = T))) %>% 
+  left_join(pob_irag %>% 
+              group_by(region_est, anno_sintomas) %>% 
+              summarise(poblacion_irag = sum(poblacion, na.rm = T))) %>% 
+
+    mutate(tasa_u = (universal/poblacion) *1e5,
+         
+         tasa_pred = (pred/poblacion) *1e5,
+         tasa_ub = (ub/poblacion) *1e5,
+         tasa_lb = (lb/poblacion) *1e5,
+         se = (se/poblacion) *1e5,
+         ic_cob = ifelse((tasa_u < tasa_ub) & (tasa_u > tasa_lb), T, F),
+         sesgo = (tasa_pred - tasa_u),
+         sesgo_rel = sesgo/tasa_u,
+         sesgo_se = sesgo/se,
+         mape_num = abs(tasa_u - tasa_pred), 
+         mape_den = (abs(tasa_u) + abs(tasa_pred))/2,
+         mape = mape_num/mape_den,
+         #   mape = abs(tasa_u - tasa_pred)/abs(tasa_u),
+         ecm = sesgo^2 + se^2,
+         
+         tasa_i = (irag/poblacion_irag) *1e5,
+         n_i = n) %>% 
+  
+  group_by(modelo_n) %>% 
+  mutate(tasa_i_mean = mean(tasa_i)) %>% 
+  ungroup() %>% 
+  
+  mutate(tasa_ub_i = (pois.exact(irag, poblacion_irag)$upper) *1e5,
+         tasa_lb_i = (pois.exact(irag, poblacion_irag)$lower) *1e5,
+         se_i = (tasa_ub_i - tasa_i)/1.96, 
+         ic_cob_i = ifelse((tasa_u < tasa_ub_i) & (tasa_u > tasa_lb_i), T, F),
+         sesgo_i = (tasa_i - tasa_u),
+         sesgo_rel_i = sesgo_i/tasa_u,
+         sesgo_se_i = sesgo_i/se_i,
+         mape_num_i = abs(tasa_u - tasa_i), 
+         mape_den_i = (abs(tasa_u) + abs(tasa_i))/2,
+         mape_i = mape_num/mape_den,
+#         mape_i = abs(tasa_u - tasa_i)/abs(tasa_u),
+         ecm_i = sesgo_i^2 + se_i^2)
+
+d.ts <- rbind(d.ts, d.ts.reg)
+
+rm(d.ts.reg)
+```
+
+### Tabla distancias
+
+```{r tabla distancias}
+
+regs <- levels(droplevels(d.ts$region_est))
+
+d.temp <- d.ts %>% filter(modelo_n == "Modelo 1: básico")
+
+distancias <- data.frame()
+
+for (i in regs) {
+  
+  d.temp.i <- d.temp %>% 
+    filter(region_est == i)
+  
+  temp <- d.temp.i %>% 
+  summarise(cor = cor(tasa_u, tasa_i),
+            cor_d = CorDistance(tasa_u, tasa_i),
+            dtw_d = dtw(d.temp.i$tasa_i, d.temp.i$tasa_u, 
+                        step.pattern = asymmetric)$normalizedDistance,
+            sesgo = mean(sesgo_i),
+            sesgo_rel = mean(sesgo_rel_i),
+            se = mean(se_i),
+            `cobertura_ic` = mean(ic_cob_i),
+            `sesgo/se` = mean(sesgo_se_i),
+            smape = mean(mape_i),
+            ecm = mean(ecm_i)) %>% 
+  mutate(nivel = "Región",
+         estimacion = "Tasa IRAG",
+         unidad = i,
+         .before = cor)
+  
+  distancias <- rbind(distancias, temp)
+  
+  rm(temp)
+  
+}
+
+d.temp <- d.ts %>% filter(modelo_n != "Modelo 0: nulo")
+
+for (j in levels(as.factor(d.temp$modelo_n))) {
+
+  for (i in regs) {
+
+  d.temp.ij <- d.temp %>% 
+  filter(modelo_n == j,
+         region_est == i)
+
+  temp <- d.temp.ij %>% 
+  summarise(cor = cor(tasa_u, tasa_pred),
+            cor_d = CorDistance(tasa_u, tasa_pred),
+            dtw_d = dtw(d.temp.ij$tasa_pred, d.temp.ij$tasa_u, 
+                        step.pattern = asymmetric)$normalizedDistance,
+            sesgo = mean(sesgo),
+            sesgo_rel = mean(sesgo_rel),
+            se = mean(se),
+            `cobertura_ic` = mean(ic_cob),
+            `sesgo/se` = mean(sesgo_se),
+            smape = mean(mape),
+            ecm = mean(ecm)) %>% 
+  mutate(nivel = "Región",
+         estimacion = j,
+         unidad = i,
+         .before = cor)
+  
+  distancias <- rbind(distancias, temp)
+  
+  rm(temp)
+  
+  }
+}
+
+```
+
+```{r include=F}
+distancias %>% 
+  mutate_at(c("cor", "dtw_d", "sesgo_rel", "sesgo/se", "smape", "ecm"), round, 3) %>% 
+  dplyr::select(-nivel, -estimacion, -cor_d, -sesgo, -se, -cobertura_ic) %>% 
+  kable(caption = "Tabla comparativa de las series modeladas") %>%
+  kable_paper(full_width = F, 
+              bootstrap_options = "striped", 
+              fixed_thead = T) %>% 
+  #add_header_above(c(" " = 1, "Modelos" = 3)) %>%
+  pack_rows("Tasa IRAG", 1, 9) %>%
+  pack_rows("Modelo 1: básico", 10, 18) %>% 
+  pack_rows("Modelo 2: intermedio", 19, 27) %>% 
+  pack_rows("Modelo 3: final", 28, 36)
+
+distancias %>% 
+   mutate_at(c("cor", "dtw_d", "sesgo_rel", "sesgo/se", "smape", "ecm"), round, 3) %>% 
+   dplyr::select(-unidad, -nivel, -estimacion, -cor_d, -sesgo, -se, -cobertura_ic) %>% 
+   cor(use = "complete.obs") %>% corrplot::corrplot.mixed()
+
+```
+
+### Tabla resumen coeficientes
+```{r}
+t1 <- tab.models %>%
+  mutate(Model = fct_relevel(Model, "Modelo 0: nulo", "Modelo 1: básico", "Modelo 2: intermedio", "Modelo 3: final")) %>% 
+  dplyr::select(Coef, IC_lower, IC_upper, IRR, IRR_lower, IRR_upper, Model, Vars) %>% 
+  mutate(Coef_IC95 = paste(round(Coef, 3), "(", round(IC_lower, 3), "-", round(IC_upper, 3), ")"),
+         IRR_IC95 = paste(round(IRR, 3), "(", round(IRR_lower, 3), "-", round(IRR_upper, 3), ")")) %>% 
+  pivot_wider(id_cols = Vars,
+              values_from = c(IRR_IC95),
+              names_from = Model)
+
+t2 <- tab.models %>%
+  mutate(Model = fct_relevel(Model, "Modelo 0: nulo", "Modelo 1: básico", "Modelo 2: intermedio", "Modelo 3: final")) %>% 
+  dplyr::select(Model, VarRegEdad, VarResiduals, ICC, AIC, BIC, logLik, Deviance) %>% 
+  distinct() %>% 
+  group_by(Model) %>% 
+  mutate_all(round, 3) %>% 
+  data.table::transpose(keep.names = c("rn"), make.names = "Model") %>% 
+  mutate(Vars = rn,
+         .keep = "unused",
+         .before = "Modelo 0: nulo") %>% 
+  mutate_at(c("Modelo 0: nulo", "Modelo 1: básico", "Modelo 2: intermedio", "Modelo 3: final"), as.character)
+
+t3 <- distancias %>% 
+  mutate(Model = estimacion) %>% 
+  filter(unidad == "Chile",
+         Model != "Tasa IRAG") %>% 
+  mutate_at(c("cor", "dtw_d", "sesgo", "sesgo_rel", "se", "smape", "cobertura_ic", "sesgo/se", "ecm"), round, 3) %>% 
+  dplyr::select(Model, cor, dtw_d, smape, `sesgo/se`, ecm) %>% 
+  data.table::transpose(keep.names = c("rn"), make.names = "Model") %>% 
+  mutate(Vars = rn,
+         .keep = "unused",
+         .before = "Modelo 1: básico") %>% 
+  mutate_at(c("Modelo 1: básico", "Modelo 2: intermedio", "Modelo 3: final"), as.character)
+
+bind_rows(t1, t2, t3) %>% 
+  mutate_at(c("Modelo 0: nulo", "Modelo 1: básico", "Modelo 2: intermedio", "Modelo 3: final"), replace_na, "") %>% 
+  kable(caption = "Tabla resumen de los modelos. Coeficientes expresados como IRR (IC 95%)") %>%
+  kable_paper(full_width = F, 
+              bootstrap_options = "striped", 
+              fixed_thead = T) %>% 
+  add_header_above(c(" " = 1, "Modelos" = 4)) %>%
+  pack_rows("Componente fijo", 1, 15) %>%
+  pack_rows("Componente aleatorio", 16, 18) %>% 
+  pack_rows("Errores de predicción y distancia entre series", 19, 27)
+  
+```
+
+
+### Plot evaluación estimación
+
+```{r plot incidencias}
+d.plot <- d.ts %>% 
+  filter(modelo_n == "Modelo 0: nulo",
+         region_est == "Chile")
+
+scale.factor1 <- (max(d.plot$tasa_u, na.rm = T) / max(d.plot$tasa_i, na.rm = T))
+
+g1 <- d.plot %>% 
+  ggplot(aes(x = semana_anno_sint)) +
+#  geom_line(aes(y = tasa_i*scale.factor1, linetype = "b. Tasa estimada\n(IRAG)"), size = .5) +
+  geom_line(aes(y = tasa_u, linetype = "Observed total cases rate"), size = .5) +
+#  scale_y_continuous(name = "Incidencia notificación universal\n", 
+#                     sec.axis = sec_axis(~./scale.factor1, 
+#                                         name = "Incidencia estimada por IRAG")) +
+  labs(title = "Assessment of errors in the total cases incidence estimation, March 2020 - March 2023",
+       x = "Date", 
+       y = "Incidence per 100,000 population",
+       linetype = NULL) +
+  theme_minimal(base_size = 8) +
+  theme(legend.position = "bottom")
+#g1   
+```
+
+```{r plot smape}
+d.plot <- d.ts %>% 
+  filter(modelo_n != "Modelo 0: nulo",
+         region_est == "Chile") %>% 
+  mutate(modelo_n = fct_recode(modelo_n,
+                               "Model 1: basic" = "Modelo 1: básico",
+                               "Model 2: intermediate" = "Modelo 2: intermedio",
+                               "Model 3: final" = "Modelo 3: final"))
+
+
+g2 <- d.plot %>% 
+  ggplot(aes(x = semana_anno_sint)) +
+  geom_line(aes(y = abs(mape), color = modelo_n), size = .5) +
+#  geom_line(data = . %>% filter(modelo_n == "Modelo 1: básico"),
+#            aes(y = sesgo_rel_i, color = "Tasa estimada\n(IRAG)"), size = .5) +
+  geom_hline(yintercept = 0, linetype = 3) +
+  labs(x = " ",
+       y = "Symmetric mean absolute\npercentage error",
+       color = "Model") +
+  theme_minimal(base_size = 8)
+#g2
+```
+
+```{r plot sesgo absoluto, include=FALSE}
+d.plot <- d.ts %>% 
+  filter(modelo_n != "Modelo 0: nulo",
+         region_est == "Chile") %>% 
+  mutate(modelo_n = fct_recode(modelo_n,
+                               "Model 1: basic" = "Modelo 1: básico",
+                               "Model 2: intermediate" = "Modelo 2: intermedio",
+                               "Model 3: final" = "Modelo 3: final"))
+
+
+d.plot %>% 
+  ggplot(aes(x = semana_anno_sint)) +
+  geom_line(aes(y = abs(sesgo), color = modelo_n), size = .5) +
+  geom_hline(yintercept = 0, linetype = 3) +
+  labs(x = " ",
+       y = "Relative bias\n",
+       color = "Model") +
+  theme_minimal(base_size = 8)
+```
+
+```{r plot sesgo se}
+d.plot <- d.ts %>% 
+  filter(modelo_n != "Modelo 0: nulo",
+         region_est == "Chile") %>% 
+  mutate(modelo_n = fct_recode(modelo_n,
+                               "Model 1: basic" = "Modelo 1: básico",
+                               "Model 2: intermediate" = "Modelo 2: intermedio",
+                               "Model 3: final" = "Modelo 3: final"))
+
+#scale.factor2 <- (max(d.plot$sesgo_se, na.rm = T) / max(d.plot$sesgo_se_i, na.rm = T))
+
+g3 <- d.plot %>% 
+  ggplot(aes(x = semana_anno_sint)) +
+  geom_line(aes(y = abs(sesgo_se), color = modelo_n), size = .5) +
+#  geom_line(aes(y = sesgo_se_i*scale.factor2, color = "Tasa estimada\n(IRAG)"), size = .5) +
+  geom_hline(yintercept = .1, linetype = 3) +
+#  scale_y_continuous(name = "\nSesgo/SE\n", 
+#                     sec.axis = sec_axis(~./scale.factor2, 
+#                                         name = "Sesgo/SE tasa IRAG")) +
+  labs(x = " ",
+       y = "Standardized bias\n",
+       color = "Model") +
+  theme_minimal(base_size = 8)
+#g3
+```
+
+```{r plot ecm, fig.height=2, fig.width=8}
+
+y.axis <- bquote(log[10]~MSE)
+y.axis <- paste(bquote(log[10]~x), bquote((Mean~square~error)))
+
+d.plot <- d.ts %>% 
+  filter(modelo_n != "Modelo 0: nulo",
+         region_est == "Chile") %>% 
+  mutate(modelo_n = fct_recode(modelo_n,
+                               "Model 1: basic" = "Modelo 1: básico",
+                               "Model 2: intermediate" = "Modelo 2: intermedio",
+                               "Model 3: final" = "Modelo 3: final"))
+
+
+g4 <- d.plot %>% 
+  ggplot(aes(x = semana_anno_sint)) +
+  geom_line(aes(y = log10(ecm), color = modelo_n), size = .5) +
+  geom_hline(yintercept = .1, linetype = 3) +
+  labs(x = "Date",
+       y = "log(Mean square error)\n\n",
+       color = "Model") +
+  theme_minimal(base_size = 8)
+```
+
+```{r fig.height=8, fig.width=8}
+g234 <- ggarrange(g2, g3, g4, nrow = 3, common.legend = T, legend = "bottom")
+ggarrange(g1, g234, ncol = 1, heights = c(1, 2))
+```
+
+
+### Plot de Bland-Altman
+```{r}
+d.plot <- d.ts %>% 
+  filter(modelo_n != "Modelo 0: nulo",
+         region_est == "Chile") %>% 
+  mutate(modelo_n = fct_recode(modelo_n,
+                               "Model 1: basic" = "Modelo 1: básico",
+                               "Model 2: intermediate" = "Modelo 2: intermedio",
+                               "Model 3: final" = "Modelo 3: final")) %>% 
+  dplyr::select(tasa_u, tasa_pred, modelo_n) %>% 
+  mutate(average = (tasa_u + tasa_pred)/2,
+         diff = tasa_u - tasa_pred) %>% 
+  group_by(modelo_n) %>% 
+  mutate(media = mean(diff),
+         ic_ub = media + 1.96*sd(diff),
+         ic_lb = media - 1.96*sd(diff))
+
+d.plot %>% summary()
+
+d.plot %>% 
+  ggplot(aes(x = average, y = diff, color = modelo_n)) +
+  geom_point() +
+  geom_hline(aes(yintercept = media, color = modelo_n), size = .5) +
+  geom_hline(aes(yintercept = ic_lb, color = modelo_n), linetype = 2, size = 0.5) +
+  geom_hline(aes(yintercept = ic_ub, color = modelo_n), linetype = 2, size = 0.5)  +
+  labs(title = "Bland-Altman plot for the total cases national incidence estimation, March 2020 - March 2023",
+       x = "Average incidence rate",
+       y = "Difference between incidence rates",
+       color = "Model") +
+  theme_minimal(base_size = 8)
+
+```
+
+# Predicción sobre total nacional
+
+```{r, eval=F}
+d.pred <- dat_clean %>% 
+  filter(!(edad_cat %in% c("[80,100)", "[100,120]"))) %>% 
+  pivot_wider(names_from = vigilancia,
+              values_from = conteo) %>% 
+  left_join(pob_reg) %>% 
+  left_join(pob_irag %>% 
+              mutate(poblacion_irag = poblacion) %>% 
+              group_by(anno_sintomas, region_est, edad_cat, sexo) %>% 
+              summarise(poblacion_irag = sum(poblacion_irag))) %>%
+  drop_na(sexo) %>% 
+  group_by(anno_sintomas, semana_sintomas, semana_anno_sint,
+           region_est, edad_cat) %>% 
+  summarise(universal = sum(universal, na.rm = T),
+            irag = sum(irag, na.rm = T),
+            poblacion = sum(poblacion, na.rm = T),
+            poblacion_irag = sum(poblacion_irag, na.rm = T),
+            Alpha = mean(Alpha, na.rm = T), 
+            B.1.1.348 = mean(B.1.1.348, na.rm = T), 
+            B.1.1 = mean(B.1.1, na.rm = T), 
+            Delta = mean(Delta, na.rm = T), 
+            Gamma = mean(Gamma, na.rm = T), 
+            Lambda = mean(Lambda, na.rm = T), 
+            Mu = mean(Mu, na.rm = T), 
+            N.4 = mean(N.4, na.rm = T), 
+            Omicron = mean(Omicron, na.rm = T), 
+            Otras = mean(Otras, na.rm = T)) %>% 
+  ungroup() %>% 
+  left_join(dat_hosp %>% 
+              group_by(anno_sintomas, semana_anno_sint, region_est, edad_cat) %>% 
+              summarise(conteo_hosp = sum(conteo_hosp),
+                        conteo_notif = sum(conteo_notif)) %>% 
+              mutate(prop_hosp = (conteo_hosp/conteo_notif)*100,
+                     .keep = "unused")) %>% 
+  left_join(dat_pos %>% 
+              mutate(positividad = (pcr_positivo/pcr_conteo)*100,
+                     .keep = "unused")) %>%   
+  left_join(dat_vac %>% 
+              left_join(pob_nac %>%
+                          group_by(anno_sintomas, edad_cat) %>% 
+                          summarise(poblacion = sum(poblacion))) %>% 
+              mutate(prop_vac_2da = (vacunas_2da/poblacion)*100,
+                     prop_vac_ref = (vacunas_ref/poblacion)*100,
+                     .keep = "unused")) %>%   
+  mutate(tasa_irag = (irag/poblacion_irag) * 1e5,
+         region_est = relevel(region_est, "Metropolitana"),
+         edad_cat = ordered(edad_cat),
+         universal_mean = rollapply(universal, 4, mean, align = "center", fill = NA, partial = T),
+         universal_mean = floor(universal_mean),
+         prop_hosp = replace_na(prop_hosp, 0),
+         prop_vac_2da = replace_na(prop_vac_2da, 0),
+         prop_vac_ref = replace_na(prop_vac_ref, 0)) %>% 
+  mutate(across(Alpha:Otras, replace_na, 0)) %>% 
+  group_by(edad_cat, semana_anno_sint) %>% 
+  fill(tasa_irag, .direction = "downup") %>% 
+  ungroup() %>% 
+  fill(positividad, .direction = "up") %>% 
+  droplevels()
+```
+
+```{r, eval=F}
+pred_nac <- predict(m3, 
+                    newdata = d.pred %>% 
+                                mutate(region_est = as.character(region_est)), 
+                    type = "response", 
+                    se.fit = T,
+                    allow.new.levels = TRUE)
+
+d.pred <- d.pred %>% 
+  mutate(modelo = "m3",
+         modelo_n = "Modelo 3: final") %>% 
+  cbind(pred_nac) %>% 
+  mutate(pred = fit,
+         se = se.fit,
+         .keep = "unused") %>% 
+  mutate(ub = pred + (1.96*se),
+         lb = pred - (1.96*se))
+
+save(d.pred, file = "modelos datos OE1 pred nac contagios.RData")
+
+rm(pred_nac, d.pred)
+```
+
+```{r}
+load("modelos datos OE1 pred nac contagios.RData")
+```
+
+```{r modelo final pred nacional plot}
+#dat####
+
+d.plot <- d.pred %>% 
+  group_by(semana_anno_sint, semana_sintomas, anno_sintomas, modelo_n) %>% 
+  summarise(universal = sum(universal),
+            pred = sum(pred),
+            ub = sum(ub),
+            lb = sum(lb)) %>% 
+  left_join(pob_reg %>% 
+              group_by(anno_sintomas) %>% 
+              summarise(poblacion = sum(poblacion, na.rm = T))) %>% 
+  ungroup() 
+
+#plot####
+d.plot %>% 
+  ggplot(aes(x = semana_anno_sint)) +
+  geom_line(aes(y = pred, color = "Casos estimados"), size = .7) +
+  geom_ribbon(aes(ymin = lb, ymax = ub, fill = "Casos estimados"), alpha = .3, show.legend = F) +
+  geom_line(aes(y = universal, color = "Casos observados\n(universal)"), size = .5) +
+  labs(title = "Incidencia de COVID-19, marzo 2020 - marzo 2023",
+        y = "Casos",
+        x = "Fecha",
+       color = "Serie") +
+  theme_minimal(base_size = 8)
+
+```
+
+```{r tabla distancias pred nac}
+d.ts.pred <- d.pred %>% 
+  group_by(semana_anno_sint, semana_sintomas, anno_sintomas, modelo_n) %>% 
+  summarise(universal = sum(universal),
+            pred = sum(pred),
+            ub = sum(ub),
+            lb = sum(lb),
+            se = sum(se),
+            n = n()) %>% 
+  left_join(pob_reg %>% 
+              group_by(anno_sintomas) %>% 
+              summarise(poblacion = sum(poblacion, na.rm = T))) %>% 
+
+  mutate(tasa_u = (universal/poblacion) *1e5,
+         tasa_pred = (pred/poblacion) *1e5,
+         tasa_ub = (ub/poblacion) *1e5,
+         tasa_lb = (lb/poblacion) *1e5,
+         se = (se/poblacion) *1e5,
+         ic_cob = ifelse((tasa_u <= tasa_ub) & (tasa_u >= tasa_lb), T, F),
+         sesgo = (tasa_pred - tasa_u),
+         sesgo_rel = sesgo/tasa_u,
+         sesgo_se = sesgo/se,
+         mape_num = abs(tasa_u - tasa_pred), 
+         mape_den = (abs(tasa_u) + abs(tasa_pred))/2,
+         mape = mape_num/mape_den,
+         ecm = sesgo^2 + se^2) %>% 
+  
+ ungroup()
+
+d.ts.pred <- d.ts.pred %>% 
+  
+  mutate(region_est = as.factor("Chile"),
+         .before = "modelo_n") %>% 
+  
+  summarise(cor = cor(tasa_u, tasa_pred),
+            cor_d = CorDistance(tasa_u, tasa_pred),
+            dtw_d = dtw(d.ts.pred$tasa_pred, d.ts.pred$tasa_u, 
+                        step.pattern = asymmetric)$normalizedDistance,
+            sesgo = mean(sesgo),
+            sesgo_rel = mean(sesgo_rel),
+            se = mean(se),
+            cobertura_ic = mean(ic_cob),
+            `sesgo/se` = mean(sesgo_se),
+            smape = mean(mape),
+            ecm = mean(ecm)) %>% 
+  mutate(nivel = NA,
+         estimacion = NA,
+         unidad = "Chile",
+         .before = cor) 
+
+distancias %>% 
+  rbind(d.ts.pred) %>% 
+  mutate_at(c("cor", "dtw_d", "smape", "sesgo/se", "ecm", "cobertura_ic"), round, 3) %>% 
+  mutate(ic_cobertura = cobertura_ic) %>% 
+  dplyr::select(-nivel, -estimacion, -cor_d, -sesgo, -se, -cobertura_ic) %>%
+  kable(caption = "Tabla comparativa de las series modeladas") %>%
+  kable_paper(full_width = F, 
+              bootstrap_options = "striped", 
+              fixed_thead = T) %>% 
+  #add_header_above(c(" " = 1, "Modelos" = 3)) %>%
+  pack_rows("Tasa IRAG", 1, 9) %>%
+  pack_rows("Modelo 1: básico", 10, 18) %>% 
+  pack_rows("Modelo 2: intermedio", 19, 27) %>% 
+  pack_rows("Modelo 3: final", 28, 36) %>%
+  pack_rows("Modelo 3: final (serie nacional)", 37, 37) 
+
+```
+
+### Observados y predichos totales
+```{r}
+d.pred %>% 
+  group_by(anno_sintomas, modelo_n) %>% 
+  summarise(universal = sum(universal),
+            pred = sum(pred),
+            ub = sum(ub),
+            lb = sum(lb)) %>% 
+  ungroup() %>% 
+  rbind(d.pred %>% 
+          mutate(anno_sintomas = NA) %>% 
+          group_by(anno_sintomas, modelo_n) %>% 
+          summarise(universal = sum(universal),
+            pred = sum(pred),
+            ub = sum(ub),
+            lb = sum(lb)) %>% 
+          ungroup() ) %>% 
+  mutate_at(c("universal", "pred", "ub", "lb"), floor) %>% 
+  mutate(anno = replace_na(as.character(anno_sintomas), "Total"),
+         .keep = "unused",
+         .before = modelo_n) %>% 
+  kable(caption = "Casos observados y predichos por año") %>%
+  kable_paper(full_width = F, 
+              bootstrap_options = "striped", 
+              fixed_thead = T) %>% 
+  add_header_above(c(" " = 2, "Observadas" = 1, "Predichas" = 3))
+  
+```
