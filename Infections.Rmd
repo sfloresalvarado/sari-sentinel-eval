@@ -20,7 +20,9 @@ library(lubridate)
 library(ggpubr)
 library(kableExtra)
 #modelos
-library(glmmTMB)
+library(glmmTMB) #version 1.1.7, 
+# dependencia: library(TMB) version 1.9.6
+# dependencia: library(Matrix) version 1.5-4.1
 library(MASS)
 library(performance)
 #distancias
@@ -31,7 +33,8 @@ library(dtw)
 
 # Data para paper
 ```{r DATOS DEFINITIVOS AGREGADOS}
-load("data/dat_clean contagios.RData")
+load("data/dat_clean contagios para publicar.RData")
+#corresponde a un conjunto de datos con ruido aleatorio
 ```
 
 # Análisis exploratorio
@@ -55,22 +58,16 @@ d.plot <- dat_clean %>%
               summarise(conteo_hosp = sum(conteo_hosp),
                         conteo_notif = sum(conteo_notif)) %>% 
               mutate(prop_hosp = conteo_hosp/conteo_notif)) %>% 
-  #mutate(conteo_mean = rollapply(conteo, 4, mean, align = "center", fill = NA, partial = T),
-   #      conteo_mean = floor(conteo_mean)) %>% 
   ungroup() %>% 
   mutate(poblacion = ifelse(vigilancia == "irag", poblacion_irag, poblacion),
          tasa = (conteo/poblacion) *1e5,
          tasa = na_if(tasa, Inf),
          tasa_est = ifelse(vigilancia == "irag", tasa*(1/prop_hosp), tasa))
-         #corrección: por proporción de hospitalizaciones
-         #irag no sirve para estimar incidencia de contagios sino de
-         #hospitalizaciones, salvo que apliquemos esta corrección
 
 #plot####
 d.plot %>% 
   ggplot(aes(x = semana_anno_sint)) +
   geom_line(aes(y = tasa_est, color = vigilancia)) +
- # geom_line(aes(y = tasa_est, color = vigilancia), linetype = 3) +
   labs(title = "Incidencia de COVID-19, marzo 2020 - marzo 2023",
        x = "Fecha",
        y = "Incidencia estimada por 100.000 habitantes",
@@ -83,8 +80,8 @@ d.plot %>%
 
 ## Por sexo
 ```{r irag nacional por sexo}
+#datos####
 d.plot <- dat_clean %>% 
-#consideramos sólo hasta 80 años porque hasta ese grupo hay poblaciones estimadas para IRAG
   group_by(semana_anno_sint, semana_sintomas, anno_sintomas, 
            vigilancia, sexo) %>% 
   summarise(conteo = sum(conteo)) %>% 
@@ -105,6 +102,7 @@ d.plot <- dat_clean %>%
          tasa = ifelse(vigilancia == "irag", tasa*(1/prop_hosp), tasa)) %>% 
   drop_na(sexo)
 
+#plot####
 d.plot %>% 
   ggplot(aes(x = semana_anno_sint)) +
   geom_line(aes(y = tasa, color = vigilancia, linetype = sexo)) +
@@ -120,6 +118,7 @@ d.plot %>%
 
 ## Por edad
 ```{r fig.width=8, fig.height=4}
+#datos####
 d.plot <- dat_clean %>% 
 #consideramos sólo hasta 80 años porque hasta ese grupo hay poblaciones estimadas para IRAG
   filter(!(edad_cat %in% c("[80,100)", "[100,120]"))) %>% 
@@ -143,6 +142,7 @@ d.plot <- dat_clean %>%
   ungroup() %>% 
   droplevels()
 
+#plot####
 d.plot %>% 
   ggplot(aes(x = semana_anno_sint)) +
   geom_line(aes(y = tasa, color = vigilancia)) +
@@ -159,9 +159,9 @@ d.plot %>%
 
 ## Por región
 ```{r fig.width=8, fig.height=4}
-#plot####
 regs_irag <- levels(droplevels(pob_irag$region_est))
 
+#datos####
 d.plot <- dat_clean %>% 
 #consideramos sólo hasta 80 años porque hasta ese grupo hay poblaciones estimadas para IRAG
   filter(!(edad_cat %in% c("[80,100)", "[100,120]")),
@@ -186,7 +186,7 @@ d.plot <- dat_clean %>%
   ungroup() %>% 
   drop_na(region_est)
 
-#dat####
+#plot####
 d.plot %>% 
   ggplot(aes(x = semana_anno_sint)) +
   geom_line(aes(y = tasa, color = vigilancia)) +
@@ -255,14 +255,11 @@ d.mod <- dat_clean %>%
                      prop_vac_ref = (vacunas_ref/poblacion)*100,
                      .keep = "unused")) %>%   
   mutate(tasa_irag = (irag/poblacion_irag) * 1e5,
-         #tasa_irag = ((irag/poblacion_irag) * (1/prop_hosp)) * 1e5,
-         region_est = relevel(region_est, "Metropolitana"),
          edad_cat = ordered(edad_cat),
          universal_mean = rollapply(universal, 4, mean, align = "center", fill = NA, partial = T),
          universal_mean = floor(universal_mean),
          prop_vac_2da = replace_na(prop_vac_2da, 0),
          prop_vac_ref = replace_na(prop_vac_ref, 0) ) %>% 
-  #dplyr::select(-irag, -poblacion_irag) %>% 
   mutate_at(c("Alpha", "B.1.1.348", "B.1.1", "Delta", "Gamma", 
             "Lambda", "Mu", "N.4", "Omicron", "Otras"), replace_na, 0) %>% 
   drop_na() %>% 
@@ -273,20 +270,8 @@ d.mod <- dat_clean %>%
 
 ### Modelos a comparar
 
-```{r}
-load("modelos datos OE1 contagios.RData")
-load("modelos OE1 contagios.RData")
-
-m0 <- mods[[1]]
-m1 <- mods[[2]]
-m2 <- mods[[3]]
-m3 <- mods[[4]]
-
-rm(mods)
-```
-
 #### Modelo nulo
-```{r modelo nulo, eval=F}
+```{r modelo nulo}
 m0 <- glmmTMB(universal ~ offset(log(poblacion)) +
               (1|region_est:edad_cat),
               data = d.mod, 
@@ -308,19 +293,16 @@ d.mod0 <- d.mod %>%
 rm(pred_m0)
 ```
 
-```{r}
+```{r eval=F}
 summary(m0)
 ```
 
 #### Modelo básico (sólo variables para tasa irag)
-```{r modelo basico, eval=F}
+```{r modelo basico}
 m1 <- glmmTMB(universal ~ 
               semana_anno_sint +
               tasa_irag + #sí
-              #edad_cat + #prescindible, no mejora mucho la estimación y ya está en el comp aleatorio
-              #region_est + #prescindible, no mejora mucho la estimación y ya está en el comp aleatorio
               prop_hosp + #sí
-              #prop_vac + #no significativo, posiblemente es info que ya está en prop_hosp
               offset(log(poblacion)) +
               (1|region_est:edad_cat),
               data = d.mod, 
@@ -342,12 +324,12 @@ d.mod1 <- d.mod %>%
 rm(pred_m1)
 ```
 
-```{r}
+```{r eval=F}
 summary(m1)
 ```
 
 #### Modelo intermedio
-```{r modelo intermedio, eval=F}
+```{r modelo intermedio}
 m2 <- glmmTMB(universal ~ 
               semana_anno_sint +
               tasa_irag + #sí
@@ -375,12 +357,12 @@ d.mod2 <- d.mod %>%
 rm(pred_m2)
 ```
 
-```{r}
+```{r eval=F}
 summary(m2)
 ```
 
 #### Modelo final
-```{r modelo final, eval=F}
+```{r modelo final}
 m3 <- glmmTMB(universal ~ 
               semana_anno_sint +
               tasa_irag + #sí
@@ -411,19 +393,16 @@ d.mod3 <- d.mod %>%
 rm(pred_m3)
 ```
 
-```{r}
+```{r eval=F}
 summary(m3)
 ```
 
 ####
-```{r juntar datos modelos, eval=F}
+```{r juntar datos modelos}
 d.mod <- rbind(d.mod0, d.mod1, d.mod2, d.mod3)
 rm(d.mod0, d.mod1, d.mod2, d.mod3)
 
 mods <- list(m0, m1, m2, m3)
-
-save(d.mod, file = "modelos datos OE1 contagios.RData")
-save(mods, file = "modelos OE1 contagios.RData")
 ```
 
 ## Resultados modelos
@@ -614,7 +593,6 @@ scale.factor <- (max(d.plot$tasa_u, na.rm = T) / max(d.plot$positividad, na.rm =
 #plot####
 d.plot %>%
   filter(modelo_n != "Modelo 0: nulo") %>% 
-  #filter(region_est %in% c("La Araucanía", "Magallanes")) %>% 
   ggplot(aes(x = semana_anno_sint)) +
   geom_bar(data = . %>% filter(modelo_n == "Modelo 3: final"), 
             aes(y = positividad*scale.factor), 
@@ -628,14 +606,10 @@ d.plot %>%
                                          name = "Positividad PCR SARS-CoV-2")) +
   labs(title = "Incidencia de COVID-19, marzo 2020 - marzo 2023, por región",
        x = "Fecha",
-       #y = "Incidencia estimada por 100.000 habitantes",
        color = "Serie") +
   theme_minimal(base_size = 8) +
-  #ylim(0, 2000) +
-  facet_wrap("region_est", ncol = 2, scales = "free_y")
+ facet_wrap("region_est", ncol = 2, scales = "free_y")
 
-#peaks muy sobreestimados en magallanes y la araucanía
-#no entiendo bien por qué
 ```
 
 ```{r modelo final plots por edad}
@@ -666,7 +640,6 @@ scale.factor <- (max(d.plot$tasa_u, na.rm = T) / max(d.plot$positividad, na.rm =
 #plot####
 d.plot %>% 
     filter(modelo_n != "Modelo 0: nulo") %>% 
-#filter(edad_cat == "[70,80)") %>% 
   ggplot(aes(x = semana_anno_sint)) +
   geom_bar(data = . %>% filter(modelo_n == "Modelo 3: final"), 
             aes(y = positividad*scale.factor), 
@@ -680,10 +653,8 @@ d.plot %>%
                                          name = "Positividad PCR SARS-CoV-2")) +
   labs(title = "Incidencia de COVID-19, marzo 2020 - marzo 2023, por edad",
        x = "Fecha",
-       #y = "Incidencia estimada por 100.000 habitantes",
        color = "Serie") +
   theme_minimal(base_size = 8) +
-  #ylim(0,2000) +
   facet_wrap("edad_cat", ncol = 2, scales = "free_y")
 
 ```
@@ -716,7 +687,6 @@ scale.factor <- (max(d.plot$tasa_u, na.rm = T) / max(d.plot$positividad, na.rm =
 #plot####
 d.plot %>% 
   filter(modelo_n != "Modelo 0: nulo") %>% 
-  #filter(edad_cat == "[70,80)") %>% 
   ggplot(aes(x = semana_anno_sint)) +
   geom_bar(data = . %>% filter(modelo_n == "Modelo 3: final"), 
             aes(y = positividad*scale.factor), 
@@ -730,19 +700,9 @@ d.plot %>%
                                          name = "Positividad PCR SARS-CoV-2")) +
   labs(title = "Incidencia de COVID-19, marzo 2020 - marzo 2023, por región y edad",
        x = "Fecha",
-       #y = "Incidencia estimada por 100.000 habitantes",
        color = "Serie") +
   theme_minimal(base_size = 8) +
-  #ylim(0,2000) +
   facet_grid(region_est ~ edad_cat, scales = "free_y")
-
-#peak de omicrón muy sobreestimado en grupo [70,80)
-  
-ggsave("Plots/OE1 incidencia estimada x reg + edad.png",
-       height = 10,
-       width = 20,
-       bg = "white")
-
 ```
 
 # Comparación de series
@@ -783,7 +743,6 @@ d.ts <- d.mod %>%
          mape_num = abs(tasa_u - tasa_pred), 
          mape_den = (abs(tasa_u) + abs(tasa_pred))/2,
          mape = mape_num/mape_den,
-#         mape = abs(tasa_u - tasa_pred)/abs(tasa_u),
          ecm = sesgo^2 + se^2,
          
          tasa_i = (irag/poblacion_irag) *1e5,
@@ -844,7 +803,6 @@ d.ts.reg <- d.mod %>%
          mape_num = abs(tasa_u - tasa_pred), 
          mape_den = (abs(tasa_u) + abs(tasa_pred))/2,
          mape = mape_num/mape_den,
-         #   mape = abs(tasa_u - tasa_pred)/abs(tasa_u),
          ecm = sesgo^2 + se^2,
          
          tasa_i = (irag/poblacion_irag) *1e5,
@@ -864,7 +822,6 @@ d.ts.reg <- d.mod %>%
          mape_num_i = abs(tasa_u - tasa_i), 
          mape_den_i = (abs(tasa_u) + abs(tasa_i))/2,
          mape_i = mape_num/mape_den,
-#         mape_i = abs(tasa_u - tasa_i)/abs(tasa_u),
          ecm_i = sesgo_i^2 + se_i^2)
 
 d.ts <- rbind(d.ts, d.ts.reg)
@@ -954,7 +911,6 @@ distancias %>%
   kable_paper(full_width = F, 
               bootstrap_options = "striped", 
               fixed_thead = T) %>% 
-  #add_header_above(c(" " = 1, "Modelos" = 3)) %>%
   pack_rows("Tasa IRAG", 1, 9) %>%
   pack_rows("Modelo 1: básico", 10, 18) %>% 
   pack_rows("Modelo 2: intermedio", 19, 27) %>% 
@@ -1027,18 +983,13 @@ scale.factor1 <- (max(d.plot$tasa_u, na.rm = T) / max(d.plot$tasa_i, na.rm = T))
 
 g1 <- d.plot %>% 
   ggplot(aes(x = semana_anno_sint)) +
-#  geom_line(aes(y = tasa_i*scale.factor1, linetype = "b. Tasa estimada\n(IRAG)"), size = .5) +
   geom_line(aes(y = tasa_u, linetype = "Observed total cases rate"), size = .5) +
-#  scale_y_continuous(name = "Incidencia notificación universal\n", 
-#                     sec.axis = sec_axis(~./scale.factor1, 
-#                                         name = "Incidencia estimada por IRAG")) +
   labs(title = "Assessment of errors in the total cases incidence estimation, March 2020 - March 2023",
        x = "Date", 
        y = "Incidence per 100,000 population",
        linetype = NULL) +
   theme_minimal(base_size = 8) +
   theme(legend.position = "bottom")
-#g1   
 ```
 
 ```{r plot smape}
@@ -1054,14 +1005,11 @@ d.plot <- d.ts %>%
 g2 <- d.plot %>% 
   ggplot(aes(x = semana_anno_sint)) +
   geom_line(aes(y = abs(mape), color = modelo_n), size = .5) +
-#  geom_line(data = . %>% filter(modelo_n == "Modelo 1: básico"),
-#            aes(y = sesgo_rel_i, color = "Tasa estimada\n(IRAG)"), size = .5) +
   geom_hline(yintercept = 0, linetype = 3) +
   labs(x = " ",
        y = "Symmetric mean absolute\npercentage error",
        color = "Model") +
   theme_minimal(base_size = 8)
-#g2
 ```
 
 ```{r plot sesgo absoluto, include=FALSE}
@@ -1093,21 +1041,14 @@ d.plot <- d.ts %>%
                                "Model 2: intermediate" = "Modelo 2: intermedio",
                                "Model 3: final" = "Modelo 3: final"))
 
-#scale.factor2 <- (max(d.plot$sesgo_se, na.rm = T) / max(d.plot$sesgo_se_i, na.rm = T))
-
 g3 <- d.plot %>% 
   ggplot(aes(x = semana_anno_sint)) +
   geom_line(aes(y = abs(sesgo_se), color = modelo_n), size = .5) +
-#  geom_line(aes(y = sesgo_se_i*scale.factor2, color = "Tasa estimada\n(IRAG)"), size = .5) +
   geom_hline(yintercept = .1, linetype = 3) +
-#  scale_y_continuous(name = "\nSesgo/SE\n", 
-#                     sec.axis = sec_axis(~./scale.factor2, 
-#                                         name = "Sesgo/SE tasa IRAG")) +
   labs(x = " ",
        y = "Standardized bias\n",
        color = "Model") +
   theme_minimal(base_size = 8)
-#g3
 ```
 
 ```{r plot ecm, fig.height=2, fig.width=8}
@@ -1175,7 +1116,7 @@ d.plot %>%
 
 # Predicción sobre total nacional
 
-```{r, eval=F}
+```{r}
 d.pred <- dat_clean %>% 
   filter(!(edad_cat %in% c("[80,100)", "[100,120]"))) %>% 
   pivot_wider(names_from = vigilancia,
@@ -1220,7 +1161,6 @@ d.pred <- dat_clean %>%
                      prop_vac_ref = (vacunas_ref/poblacion)*100,
                      .keep = "unused")) %>%   
   mutate(tasa_irag = (irag/poblacion_irag) * 1e5,
-         region_est = relevel(region_est, "Metropolitana"),
          edad_cat = ordered(edad_cat),
          universal_mean = rollapply(universal, 4, mean, align = "center", fill = NA, partial = T),
          universal_mean = floor(universal_mean),
@@ -1235,7 +1175,7 @@ d.pred <- dat_clean %>%
   droplevels()
 ```
 
-```{r, eval=F}
+```{r}
 pred_nac <- predict(m3, 
                     newdata = d.pred %>% 
                                 mutate(region_est = as.character(region_est)), 
@@ -1253,13 +1193,6 @@ d.pred <- d.pred %>%
   mutate(ub = pred + (1.96*se),
          lb = pred - (1.96*se))
 
-save(d.pred, file = "modelos datos OE1 pred nac contagios.RData")
-
-rm(pred_nac, d.pred)
-```
-
-```{r}
-load("modelos datos OE1 pred nac contagios.RData")
 ```
 
 ```{r modelo final pred nacional plot}
